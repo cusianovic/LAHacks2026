@@ -34,11 +34,16 @@ import type {
 // the Go server serves both the SPA and the BFF, so relative URLs work.
 const BFF_BASE_URL = '/bff';
 
-// Default project id used by the editor on first load. The BFF stub
-// recognizes this and returns the seeded sample project.
-// Change the projectId in the URL or via app state once multi-project
-// support exists.
-export const DEFAULT_PROJECT_ID = 'demo';
+// Default project id used by the editor on first load.
+//
+// Must be a valid UUID v7 — the controller's `models.Project.ID` is a
+// `uuid.UUID`, so non-UUID strings are rejected at JSON-decode time
+// before any business logic runs (publish would silently 400).
+//
+// Kept in sync with `internal/api/bff/fixtures.go::DemoProjectID`.
+// On first boot the BFF migrates any pre-existing `data/drafts/demo.json`
+// to this UUID-keyed file so the user's saved flows survive the rename.
+export const DEFAULT_PROJECT_ID = '019790a0-0000-7000-9000-000000000001';
 
 // LocalStorage cache key — used as a fallback when the BFF is
 // unreachable so the demo still loads. Toggle with `USE_LOCAL_FALLBACK`.
@@ -96,12 +101,20 @@ class PuploadBFF {
     }
   }
 
-  /** Persist a draft (project + layouts). Idempotent. Does not publish. */
+  /** Persist a draft (project + layouts). Idempotent. Does not publish.
+   *
+   *  By default a BFF failure is swallowed and the payload is kept in
+   *  localStorage — that keeps autosave from spamming the user with
+   *  toasts when the dev server blips. Pass `{ strict: true }` from
+   *  flows where a successful round-trip is a precondition for the
+   *  next call (e.g. Publish) so the caller can react to the error
+   *  instead of pushing a stale on-disk draft. */
   async saveDraft(
     projectID: string,
     project: Project,
     layouts: Record<string, CanvasLayout>,
     publishStatus: PublishStatus,
+    opts: { strict?: boolean } = {},
   ): Promise<void> {
     const payload: EnrichedProject = { project, layouts, publishStatus };
     if (USE_LOCAL_FALLBACK) {
@@ -113,7 +126,7 @@ class PuploadBFF {
         body: JSON.stringify(payload),
       });
     } catch (err) {
-      if (!USE_LOCAL_FALLBACK) throw err;
+      if (opts.strict || !USE_LOCAL_FALLBACK) throw err;
       console.warn('[bff] saveDraft failed, kept in localStorage', err);
     }
   }

@@ -198,6 +198,14 @@ type EnrichedProject struct {
 	Project       Project                 `json:"project"`
 	Layouts       map[string]CanvasLayout `json:"layouts"`
 	PublishStatus string                  `json:"publishStatus"`
+	// LastPublishedHash is the SHA-256 of the canonical JSON of
+	// `Project` at the moment of the most recent successful publish.
+	// PublishStatus is derived from this on every save:
+	//   ""               → "not_published"
+	//   matches current  → "published"
+	//   mismatches       → "unpublished_changes"
+	// See `hashProject` / `derivePublishStatus` in handler.go.
+	LastPublishedHash string `json:"lastPublishedHash,omitempty"`
 }
 
 type AIGenerateRequest struct {

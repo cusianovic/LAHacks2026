@@ -8,6 +8,21 @@ package bff
 // Search this file for `TODO(wire)` to find the swap points.
 // =====================================================================
 
+// DemoProjectID is the stable UUID v7 used by the editor's demo project.
+//
+// The controller's `models.Project.ID` is a `uuid.UUID`, so the value
+// the BFF sends in `POST /api/v1/project/:id` MUST parse as a real
+// UUID — otherwise the JSON decode on the controller side errors out
+// before any business logic runs and the push silently 400s. We use
+// a fixed UUID v7 here so:
+//   - the demo is publishable out of the box (no `pup init` required),
+//   - the same project lands on the controller every reload,
+//   - logs show a recognisable ID instead of a random one each session.
+//
+// New projects (post-hackathon multi-project support) should generate
+// their own UUID v7 client-side and persist it.
+const DemoProjectID = "019790a0-0000-7000-9000-000000000001"
+
 // SeedProject returns the demo project loaded on first request when
 // no draft exists for the given ID.
 //

@@ -11,6 +11,7 @@ import type { Flow, PublishStatus } from '@/types/pupload';
 
 import { InspectorSection, IconButton } from '@/components/inspector';
 import ListRow from '@/components/common/ListRow';
+import PuploadLogo from '@/components/icons/PuploadLogo';
 import StatusDot, { type SaveStatus } from '@/components/common/StatusDot';
 import ContextMenu, { type ContextMenuItem } from '@/components/canvas/ContextMenu';
 
@@ -218,15 +219,17 @@ function ProjectHeader({ name, publishStatus }: ProjectHeaderProps) {
   );
 }
 
-// Tiny logo placeholder — swap the inner element for your real asset
-// (e.g. an `<img src={pupload}/>` or an inline SVG).
+// Pupload mark in the project header. White on the dark chrome —
+// `currentColor` flows through `PuploadLogo`'s `fill`. The full-colour
+// (accent green) variant is intended for marketing/auth surfaces;
+// switch the wrapper's text colour there.
 function ProjectLogo() {
   return (
     <span
       aria-hidden
-      className="flex h-[18px] w-[22px] shrink-0 items-center justify-center"
+      className="flex h-[18px] w-[22px] shrink-0 items-center justify-center text-white"
     >
-      <Box size={14} className="text-ink" />
+      <PuploadLogo className="h-full w-auto" />
     </span>
   );
 }

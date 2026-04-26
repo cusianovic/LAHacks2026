@@ -246,6 +246,11 @@ export interface EnrichedProject {
   project: Project;
   layouts: Record<string, CanvasLayout>;   // keyed by Flow.Name
   publishStatus: PublishStatus;
+  /** SHA-256 of the canonical Project JSON at the moment of the last
+   *  successful publish. The BFF derives `publishStatus` from this on
+   *  every save. The frontend must echo it back unchanged on PUT — it's
+   *  treated as opaque metadata client-side. */
+  lastPublishedHash?: string;
 }
 
 /* --------------------- AI generation response ---------------------- */

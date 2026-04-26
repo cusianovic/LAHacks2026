@@ -2,6 +2,8 @@ package bff
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -72,14 +74,17 @@ func (h *Handler) loadOrSeed(ctx context.Context, projectID string) (*EnrichedPr
 	// 2. No draft — try the controller for an already-published project.
 	//    Same merge applies: seed tasks always available even if the
 	//    controller's stored project predates a fixture update.
+	//    LastPublishedHash is computed against the merged project so
+	//    the very next edit flips PublishStatus to unpublished_changes.
 	if h.Ctrl != nil {
 		p, err := h.Ctrl.GetProject(ctx, projectID)
 		if err == nil && p != nil {
 			p.Tasks = MergeSeedTasks(p.Tasks)
 			seeded := &EnrichedProject{
-				Project:       *p,
-				Layouts:       map[string]CanvasLayout{},
-				PublishStatus: "published",
+				Project:           *p,
+				Layouts:           map[string]CanvasLayout{},
+				PublishStatus:     "published",
+				LastPublishedHash: hashProject(*p),
 			}
 			if err := h.Store.SaveProject(projectID, seeded); err != nil {
 				return nil, err
@@ -124,12 +129,20 @@ func (h *Handler) putProject(w http.ResponseWriter, r *http.Request) {
 	if ep.Project.ID == "" {
 		ep.Project.ID = id
 	}
-	if ep.PublishStatus == "" {
-		ep.PublishStatus = "unpublished_changes"
-	}
 	if ep.Layouts == nil {
 		ep.Layouts = map[string]CanvasLayout{}
 	}
+	// PublishStatus is server-derived from the hash. Anything the
+	// frontend sent is ignored — the hash is the only thing we trust.
+	// LastPublishedHash is owned by the publish path, so preserve it
+	// from the existing draft on every PUT (the frontend echoes it back
+	// untouched, but if a stale tab sends an empty value we don't want
+	// to lose it).
+	existing, _, _ := h.Store.LoadProject(id)
+	if existing != nil {
+		ep.LastPublishedHash = existing.LastPublishedHash
+	}
+	ep.PublishStatus = derivePublishStatus(ep.Project, ep.LastPublishedHash)
 	if err := h.Store.SaveProject(id, &ep); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -137,6 +150,18 @@ func (h *Handler) putProject(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// publishProject is the BFF's analogue of `pup push`. It pushes the
+// current draft to the controller (the source of truth for runs) and,
+// on success, records the SHA-256 of the pushed project so subsequent
+// edits flip PublishStatus to "unpublished_changes" automatically.
+//
+// Failure modes:
+//   - Ctrl == nil           → 502 "controller not configured" (the
+//     operator has to set PUPLOAD_CONTROLLER_URL).
+//   - Controller unreachable → 502 with the wrapped network error so
+//     the user can see "connection refused".
+//   - Controller 4xx/5xx    → 502 with the controller's error body
+//     passed through verbatim.
 func (h *Handler) publishProject(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	ep, err := h.loadOrSeed(r.Context(), id)
@@ -145,22 +170,61 @@ func (h *Handler) publishProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if h.Ctrl == nil {
-		writeError(w, http.StatusBadGateway, "controller not configured")
+		writeError(w, http.StatusBadGateway, "controller not configured (set PUPLOAD_CONTROLLER_URL)")
 		return
 	}
 	// Make sure the project ID in the body matches the URL — the
 	// controller enforces this and will 400 otherwise.
 	ep.Project.ID = id
+	log.Printf("bff: publishing project %s → %s", id, h.Ctrl.BaseURL)
 	if err := h.Ctrl.SaveProject(r.Context(), id, &ep.Project); err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
+		log.Printf("bff: publish failed for %s: %v", id, err)
+		writeError(w, http.StatusBadGateway, fmt.Sprintf("controller push failed: %v", err))
 		return
 	}
+	// The controller mutates the canonical project before responding
+	// (it normalises stores, generates UUIDs, etc.) but for the hash
+	// to be useful as a "have we drifted since last push?" signal it
+	// must be computed against the local copy that the user is
+	// editing. Hashing the post-push project would mark every save
+	// after the first as "unpublished_changes".
+	ep.LastPublishedHash = hashProject(ep.Project)
 	ep.PublishStatus = "published"
 	if err := h.Store.SaveProject(id, ep); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	log.Printf("bff: published project %s (hash=%s)", id, ep.LastPublishedHash[:8])
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// hashProject returns a stable SHA-256 hex digest of the project's
+// canonical JSON. Used to drive `PublishStatus`. Ignores layout and
+// publish-status metadata — only the controller-bound payload counts.
+func hashProject(p Project) string {
+	data, err := json.Marshal(&p)
+	if err != nil {
+		// Marshal failure on a struct that successfully round-tripped
+		// from a previous Marshal/Unmarshal pair would be a programmer
+		// error. Returning a sentinel keeps this off the hot path of
+		// every save without panicking.
+		return ""
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
+// derivePublishStatus maps a project + last-published hash pair to
+// the discriminated status the frontend renders. Centralised so the
+// PUT and the publish handlers can't disagree on the rules.
+func derivePublishStatus(p Project, lastHash string) string {
+	if lastHash == "" {
+		return "not_published"
+	}
+	if hashProject(p) == lastHash {
+		return "published"
+	}
+	return "unpublished_changes"
 }
 
 /* ----------------------------- tasks ----------------------------- */

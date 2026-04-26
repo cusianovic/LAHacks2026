@@ -110,8 +110,10 @@ export default function BottomBar() {
       // The autosave is debounced (600ms), so the BFF may still be
       // holding a stale draft when the user clicks Publish. Flush
       // synchronously first so the controller gets exactly what is
-      // currently on the canvas.
-      await bff.saveDraft(projectID, project, layouts, publishStatus);
+      // currently on the canvas. `strict: true` opts this call out
+      // of the localStorage fallback — if the BFF can't be reached
+      // we'd rather fail loudly than push a stale on-disk draft.
+      await bff.saveDraft(projectID, project, layouts, publishStatus, { strict: true });
       await bff.publish(projectID);
       actions.setPublishStatus('published');
       console.log('[publish] success');
