@@ -21,12 +21,16 @@ import StepNode, { type StepNodeData } from './StepNode';
 import DataWellNode, { type DataWellNodeData } from './DataWellNode';
 import ContextMenu, { type ContextMenuItem } from './ContextMenu';
 import {
+  bindInput,
+  bindOutput,
   useActiveFlow,
   useFlowActions,
   useFlowState,
+  useRunState,
   useTasks,
 } from '@/state/flowStore';
-import type { DataWell, Step, Task } from '@/types/pupload';
+import type { RunState } from '@/state/flowStore';
+import type { DataWell, Step, StepRunStatus, Task } from '@/types/pupload';
 
 // Right-click target identification. The `id` is the domain id
 // (Step.ID / DataWell.Edge / edge name), NOT the prefixed RF id.
@@ -69,15 +73,24 @@ function FlowCanvasInner() {
   const tasks = useTasks();
   const flow = useActiveFlow();
   const { layouts, activeFlowName, selection } = useFlowState();
+  const runState = useRunState();
   const actions = useFlowActions();
   const layout = layouts[activeFlowName];
   const rfRef = useRef<ReactFlowInstance | null>(null);
   const { fitView } = useReactFlow();
 
+  // Run decoration is gated on the active flow matching the run's
+  // flow — swapping to a different flow during a run hides the
+  // animation here without resetting the run itself.
+  const activeRun =
+    runState.flowName === activeFlowName && runState.phase !== 'idle'
+      ? runState
+      : null;
+
   /* -------- derive RF nodes from store -------- */
   const initialNodes = useMemo(
-    () => buildNodes(flow, layout, tasks, selection),
-    [flow, layout, tasks, selection],
+    () => buildNodes(flow, layout, tasks, selection, activeRun),
+    [flow, layout, tasks, selection, activeRun],
   );
   const initialEdges = useMemo(() => buildEdges(flow), [flow]);
 
@@ -101,8 +114,20 @@ function FlowCanvasInner() {
   //
   // If you change the shape of the data passed to nodes, make sure the
   // pieces that *should* trigger a re-sync are included in `structuralSignature`.
+  // The signature includes node `data` so per-node status/upload
+  // changes (which arrive on every poll tick) propagate to React
+  // Flow's internal node array. Selection alone does NOT bump this
+  // — it's handled by the surgical second effect below.
   const structuralSignature = useMemo(
-    () => JSON.stringify(initialNodes.map((n) => ({ id: n.id, p: n.position, t: n.type }))),
+    () =>
+      JSON.stringify(
+        initialNodes.map((n) => ({
+          id: n.id,
+          p: n.position,
+          t: n.type,
+          d: nodeDataDigest(n.data),
+        })),
+      ),
     [initialNodes],
   );
   const edgesSignature = useMemo(
@@ -201,8 +226,22 @@ function FlowCanvasInner() {
     [actions, flow],
   );
 
+  /* -------- right-click context menu -------- */
+  // A single state slot drives the menu; null means hidden.
+  // Declared above the click handlers so they can dismiss the menu
+  // synchronously without relying on ContextMenu's window mousedown
+  // listener firing first.
+  const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
+  const closeContextMenu = useCallback(() => setContextMenu(null), []);
+
+  // Every left-click that lands on a React Flow surface (pane, node,
+  // edge) dismisses any open right-click menu. Explicit closure here is
+  // belt-and-suspenders alongside ContextMenu's own window mousedown
+  // listener — pointer-event handling inside React Flow can swallow the
+  // native mousedown bubble in edge cases, so we don't trust it alone.
   const handleNodeClick: NodeMouseHandler = useCallback(
     (_e, node) => {
+      setContextMenu(null);
       if (node.id.startsWith('step:')) {
         actions.selectElement({ type: 'step', id: node.id.slice(5) });
       } else if (node.id.startsWith('well:')) {
@@ -214,6 +253,7 @@ function FlowCanvasInner() {
 
   const handleEdgeClick = useCallback(
     (_e: React.MouseEvent, edge: Edge) => {
+      setContextMenu(null);
       // Edge id: "wire:<name>" or "well:<name>"
       const name = edge.id.split(':')[1] ?? edge.id;
       actions.selectElement({ type: 'edge', id: name });
@@ -222,13 +262,9 @@ function FlowCanvasInner() {
   );
 
   const handlePaneClick = useCallback(() => {
+    setContextMenu(null);
     actions.selectElement({ type: 'none', id: '' });
   }, [actions]);
-
-  /* -------- right-click context menu -------- */
-  // A single state slot drives the menu; null means hidden.
-  const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
-  const closeContextMenu = useCallback(() => setContextMenu(null), []);
 
   const handleNodeContextMenu: NodeMouseHandler = useCallback((event, node) => {
     event.preventDefault();
@@ -389,6 +425,7 @@ function buildNodes(
   layout: ReturnType<typeof useFlowState>['layouts'][string] | undefined,
   tasks: Task[],
   selection: ReturnType<typeof useFlowState>['selection'],
+  run: RunState | null,
 ): Node[] {
   if (!flow) return [];
   const nodes: Node[] = [];
@@ -396,7 +433,8 @@ function buildNodes(
   flow.Steps.forEach((step, i) => {
     const task = findTask(tasks, step.Uses);
     const pos = layout?.nodePositions[step.ID] ?? { x: 80 + i * 280, y: 120 };
-    const data: StepNodeData = { step, task, status: 'IDLE' };
+    const status: StepRunStatus = run?.stepStatuses[step.ID] ?? 'IDLE';
+    const data: StepNodeData = { step, task, status };
     nodes.push({
       id: `step:${step.ID}`,
       type: 'step',
@@ -409,7 +447,8 @@ function buildNodes(
   flow.DataWells.forEach((well, i) => {
     const direction = inferWellDirection(flow, well);
     const pos = layout?.datawellPositions[well.Edge] ?? { x: 80, y: 320 + i * 70 };
-    const data: DataWellNodeData = { well, direction };
+    const upload = run?.uploads[well.Edge];
+    const data: DataWellNodeData = { well, direction, upload };
     nodes.push({
       id: `well:${well.Edge}`,
       type: 'datawell',
@@ -420,6 +459,21 @@ function buildNodes(
   });
 
   return nodes;
+}
+
+// nodeDataDigest extracts only the run-state-driven fields from a
+// node's `data` payload, so the structural signature flips whenever
+// per-node status changes without including unrelated mutable fields
+// (the `step`/`well` references change on every reducer tick because
+// of `mapActiveFlow`'s spread — a verbatim JSON.stringify would mark
+// every keystroke as structural). Keep this in sync with the
+// `*NodeData` shapes above.
+function nodeDataDigest(data: unknown): string {
+  if (!data || typeof data !== 'object') return '';
+  const d = data as Partial<StepNodeData> & Partial<DataWellNodeData>;
+  if (d.status) return `s:${d.status}`;
+  if (d.upload) return `u:${d.upload.state}`;
+  return '';
 }
 
 function buildEdges(flow: ReturnType<typeof useActiveFlow>): Edge[] {
@@ -497,12 +551,13 @@ function findTask(tasks: Task[], uses: string): Task | undefined {
   return tasks.find((t) => t.Publisher === pub && t.Name === name);
 }
 
-// Binds a single step port (by name, on either the Inputs or Outputs
-// side) to an edge name and dispatches an UPDATE_STEP. If the port
-// isn't present in the step's array yet (the user hasn't bound it
-// before), we append a new entry. Mirrors the same pattern used in
-// `right/StepConfigPanel.tsx::updatePort` so behaviour stays in sync
-// whether the user wires from the canvas or from the inspector.
+// Binds a single step port to an edge and dispatches an UPDATE_STEP
+// patch. Both sides delegate to the shared `bindInput` / `bindOutput`
+// helpers in the store, which enforce the 1:1 rule (one entry per
+// port `Name`) — fan-out happens by *sharing* edge names across
+// inputs, not by stacking entries on the output. This indirection
+// exists so well↔step wiring uses exactly the same code path as the
+// inspector form.
 function bindStepPort(
   flow: NonNullable<ReturnType<typeof useActiveFlow>>,
   stepID: string,
@@ -513,13 +568,11 @@ function bindStepPort(
 ) {
   const step = flow.Steps.find((s) => s.ID === stepID);
   if (!step) return;
-  const ports = step[side].map((p) =>
-    p.Name === portName ? { ...p, Edge: edgeName } : p,
-  );
-  if (!ports.some((p) => p.Name === portName)) {
-    ports.push({ Name: portName, Edge: edgeName });
-  }
-  updateStep(stepID, { [side]: ports } as Partial<Step>);
+  const next =
+    side === 'Inputs'
+      ? bindInput(step.Inputs, portName, edgeName)
+      : bindOutput(step.Outputs, portName, edgeName);
+  updateStep(stepID, { [side]: next } as Partial<Step>);
 }
 
 function inferWellDirection(flow: NonNullable<ReturnType<typeof useActiveFlow>>, well: DataWell): 'source' | 'sink' {

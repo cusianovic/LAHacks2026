@@ -37,42 +37,52 @@ export interface StoreTypeDef {
 
 // To add a new store type, add another entry below.
 //
-// Field naming convention: snake_case keys (matches the spec in
-// `01-ui-plan.md` and the AI fixture in `internal/api/bff/fixtures.go`).
+// Field naming convention: PascalCase keys, matching the controller's
+// `StoreInput.Params` shape in `04-controller-api-reference.md`. The
+// controller's params decoder is strict — unknown / lowercase fields
+// like `access_key` are rejected with `json: unknown field …`.
 export const STORE_TYPES: Record<string, StoreTypeDef> = {
   s3: {
     label: 'S3 (or S3-compatible)',
     fields: [
       {
-        key: 'endpoint',
+        // Bare host — no scheme. The controller adds `http(s)://` based
+        // on the Secure flag below.
+        key: 'Endpoint',
         label: 'Endpoint',
         required: true,
-        placeholder: 'https://s3.amazonaws.com',
-        defaultValue: 'https://s3.amazonaws.com',
-        hint: 'AWS or S3-compatible host (MinIO, R2, B2, …)',
+        placeholder: 's3.amazonaws.com',
+        defaultValue: 's3.amazonaws.com',
+        hint: 'Host only, no scheme (e.g. `minio:9000`, `s3.amazonaws.com`).',
       },
       {
-        key: 'bucket',
+        key: 'BucketName',
         label: 'Bucket',
         required: true,
         placeholder: 'my-bucket',
       },
       {
-        key: 'access_key',
+        key: 'Location',
+        label: 'Region',
+        placeholder: 'us-east-1',
+        hint: 'AWS region. Optional for MinIO and other S3-compatible hosts.',
+      },
+      {
+        key: 'AccessKey',
         label: 'Access key',
         required: true,
         placeholder: 'AKIA…',
         secret: true,
       },
       {
-        key: 'secret_key',
+        key: 'SecretKey',
         label: 'Secret key',
         required: true,
         placeholder: '••••••',
         secret: true,
       },
       {
-        key: 'secure',
+        key: 'Secure',
         label: 'Use TLS',
         kind: 'boolean',
         defaultValue: 'true',

@@ -146,17 +146,42 @@ export interface LogRecord {
   Message: string;
 }
 
+// Mirrors the controller's artifact descriptor (see
+// `04-controller-api-reference.md` → WaitingURLs / Artifacts). The
+// controller emits the *Name fields; MimeType is added by the worker
+// once data lands so it's optional on the wire.
 export interface Artifact {
-  Edge: string;
-  Store: string;
-  Key: string;
-  MimeType: string;
+  StoreName: string;
+  ObjectName: string;
+  EdgeName: string;
+  MimeType?: string;
 }
 
+// WaitingURL is what the controller returns for any datawell with
+// Source="upload" (and for step outputs while a step is running). The
+// client must PUT raw bytes to `PutURL` before the controller will
+// advance the flow.
 export interface WaitingURL {
-  Edge: string;
-  URL: string;
+  Artifact: Artifact;
+  PutURL: string;
+  TTL?: string;
 }
+
+/* ---------------------- Run-time UI state ------------------------ */
+// These types live entirely on the client and back the canvas's run
+// animation. They never round-trip to the controller — the controller
+// is the source of truth for `FlowRun`, and we derive UI state from
+// each polled snapshot.
+
+/**
+ * Per-edge upload lifecycle for datawells with `Source="upload"`.
+ *
+ * - `pending`: controller is still waiting; user has not picked a file.
+ * - `uploading`: PUT to the presigned URL is in flight.
+ * - `uploaded`: PUT completed successfully.
+ * - `failed`: PUT failed; the user can click again to retry.
+ */
+export type UploadEntryState = 'pending' | 'uploading' | 'uploaded' | 'failed';
 
 /* ----------------------------- Project ----------------------------- */
 
@@ -168,12 +193,25 @@ export interface Project {
 }
 
 /* --------------------------- Validation ---------------------------- */
+// Mirrors the controller `/api/v1/flow/validate` response shape from
+// `04-controller-api-reference.md`. The controller is the only
+// validator the editor uses. The optional `StepID`/`Edge`/`Store`/
+// `Field` fields are reserved for future controller versions that
+// surface structured context for canvas decoration; today they're
+// always undefined and the UI parses context out of `Description`.
+
+export type ValidationKind = 'ValidationError' | 'ValidationWarning';
 
 export interface ValidationEntry {
-  Code: string;            // e.g. "NODE_MISSING_INPUT", "EDGE_MIME_MISMATCH"
-  Message: string;
+  Type: ValidationKind;
+  Code: string;            // e.g. "NODE_001", "EDGE_003"
+  Name: string;            // short title, e.g. "Task not found"
+  Description: string;     // human-readable detail
+  // Client-only context fields (always optional; ignored when round-
+  // tripping to the controller).
   StepID?: string;
   Edge?: string;
+  Store?: string;
   Field?: string;
 }
 

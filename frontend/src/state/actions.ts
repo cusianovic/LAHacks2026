@@ -15,11 +15,14 @@ import type {
   DataWell,
   EnrichedProject,
   Flow,
+  FlowRun,
   PublishStatus,
   SelectedElement,
   Step,
   StoreInput,
   Task,
+  UploadEntryState,
+  ValidationResult,
   XY,
 } from '@/types/pupload';
 
@@ -42,6 +45,7 @@ export type FlowAction =
   /* steps */
   | { type: 'ADD_STEP'; step: Step; position: XY }
   | { type: 'UPDATE_STEP'; id: string; patch: Partial<Step> }
+  | { type: 'RENAME_STEP'; oldID: string; newID: string }
   | { type: 'DELETE_STEP'; id: string }
 
   /* nodes & layout */
@@ -68,6 +72,23 @@ export type FlowAction =
   /* ai hydration */
   | { type: 'HYDRATE_FROM_AI'; flow: Flow; layout: CanvasLayout; newTasks: Task[] }
 
-  /* yaml panel */
-  | { type: 'TOGGLE_YAML'; format?: 'yaml' | 'json' }
-  | { type: 'CLOSE_YAML' };
+  /* bottom panel (yaml/json/issues) */
+  | { type: 'TOGGLE_YAML'; format?: BottomPanelFormat }
+  | { type: 'CLOSE_YAML' }
+
+  /* controller-backed validation */
+  | { type: 'SET_VALIDATION'; result: ValidationResult }
+
+  /* run lifecycle (canvas animation + per-edge upload tracking) */
+  | { type: 'RUN_START'; flowName: string }
+  | { type: 'RUN_SNAPSHOT'; run: FlowRun }
+  | { type: 'RUN_FAILED'; error: string }
+  | { type: 'RUN_RESET' }
+  | { type: 'SET_UPLOAD_STATE'; edge: string; state: UploadEntryState; errorMessage?: string };
+
+/**
+ * Formats supported by the slide-up panel below the canvas.
+ *  - `yaml`/`json` — flow serialization preview
+ *  - `issues`      — validation errors + warnings (live)
+ */
+export type BottomPanelFormat = 'yaml' | 'json' | 'issues';

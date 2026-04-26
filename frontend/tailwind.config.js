@@ -42,6 +42,7 @@ export default {
           saving: 'var(--color-status-saving)',
           dirty: 'var(--color-status-dirty)',
           error: 'var(--color-status-error)',
+          warn: 'var(--color-status-warn)',
           idle: 'var(--color-status-idle)',
           ready: 'var(--color-status-ready)',
           running: 'var(--color-status-running)',
@@ -76,6 +77,24 @@ export default {
         pill: '0 6px 18px -6px rgba(0,0,0,0.35), 0 2px 6px -2px rgba(0,0,0,0.25)',
         // Light-canvas card shadow (when needed).
         card: '0 4px 16px -8px rgba(0,0,0,0.25)',
+      },
+      // Run-time animations on canvas nodes. `pulse-ring` is the soft
+      // halo that signals a clickable upload datawell. `marching-stripes`
+      // is the moving diagonal pattern on a step's status strip while
+      // the controller reports it as RUNNING.
+      keyframes: {
+        'pulse-ring': {
+          '0%, 100%': { boxShadow: '0 0 0 0 rgba(2, 134, 87, 0.55)' },
+          '50%': { boxShadow: '0 0 0 8px rgba(2, 134, 87, 0)' },
+        },
+        'marching-stripes': {
+          '0%': { backgroundPosition: '0 0' },
+          '100%': { backgroundPosition: '24px 0' },
+        },
+      },
+      animation: {
+        'pulse-ring': 'pulse-ring 1.6s ease-in-out infinite',
+        'marching-stripes': 'marching-stripes 0.8s linear infinite',
       },
     },
   },

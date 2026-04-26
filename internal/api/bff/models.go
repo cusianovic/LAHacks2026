@@ -11,7 +11,8 @@
 // the Layer 1 types in `frontend/src/types/pupload.ts`.
 //
 // TODO(wire): when the real `internal/models` lands, replace these
-//             local copies with imports from that package.
+//
+//	local copies with imports from that package.
 package bff
 
 import "encoding/json"
@@ -19,12 +20,12 @@ import "encoding/json"
 /* ----------------------------- Flow ------------------------------ */
 
 type Flow struct {
-	Name            string         `json:"Name"`
-	Timeout         string         `json:"Timeout,omitempty"`
-	Stores          []StoreInput   `json:"Stores"`
-	DefaultDataWell *DataWell      `json:"DefaultDataWell,omitempty"`
-	DataWells       []DataWell     `json:"DataWells"`
-	Steps           []Step         `json:"Steps"`
+	Name            string       `json:"Name"`
+	Timeout         string       `json:"Timeout,omitempty"`
+	Stores          []StoreInput `json:"Stores"`
+	DefaultDataWell *DataWell    `json:"DefaultDataWell,omitempty"`
+	DataWells       []DataWell   `json:"DataWells"`
+	Steps           []Step       `json:"Steps"`
 }
 
 type Step struct {
@@ -49,19 +50,19 @@ type StepFlag struct {
 /* ----------------------------- Stores ---------------------------- */
 
 type StoreInput struct {
-	Name   string                 `json:"Name"`
-	Type   string                 `json:"Type"`
-	Params map[string]any         `json:"Params"`
+	Name   string         `json:"Name"`
+	Type   string         `json:"Type"`
+	Params map[string]any `json:"Params"`
 }
 
 /* ---------------------------- DataWells -------------------------- */
 
 type DataWell struct {
-	Edge     string             `json:"Edge"`
-	Store    string             `json:"Store"`
-	Source   string             `json:"Source,omitempty"`
-	Key      string             `json:"Key,omitempty"`
-	Lifetime *DataWellLifetime  `json:"Lifetime,omitempty"`
+	Edge     string            `json:"Edge"`
+	Store    string            `json:"Store"`
+	Source   string            `json:"Source,omitempty"`
+	Key      string            `json:"Key,omitempty"`
+	Lifetime *DataWellLifetime `json:"Lifetime,omitempty"`
 }
 
 type DataWellLifetime struct {
@@ -71,15 +72,15 @@ type DataWellLifetime struct {
 /* ----------------------------- Tasks ----------------------------- */
 
 type Task struct {
-	Publisher   string          `json:"Publisher"`
-	Name        string          `json:"Name"`
-	Image       string          `json:"Image"`
-	Inputs      []TaskEdgeDef   `json:"Inputs"`
-	Outputs     []TaskEdgeDef   `json:"Outputs"`
-	Flags       []TaskFlagDef   `json:"Flags"`
-	Command     TaskCommandDef  `json:"Command"`
-	Tier        string          `json:"Tier"`
-	MaxAttempts int             `json:"MaxAttempts"`
+	Publisher   string         `json:"Publisher"`
+	Name        string         `json:"Name"`
+	Image       string         `json:"Image"`
+	Inputs      []TaskEdgeDef  `json:"Inputs"`
+	Outputs     []TaskEdgeDef  `json:"Outputs"`
+	Flags       []TaskFlagDef  `json:"Flags"`
+	Command     TaskCommandDef `json:"Command"`
+	Tier        string         `json:"Tier"`
+	MaxAttempts int            `json:"MaxAttempts"`
 }
 
 type TaskEdgeDef struct {
@@ -114,12 +115,19 @@ type Project struct {
 
 /* ---------------------------- Validation ------------------------- */
 
+// ValidationEntry mirrors the controller's `/api/v1/flow/validate`
+// response item shape (see `04-controller-api-reference.md`).
+// `StepID`/`Edge`/`Store`/`Field` are optional client-side hints that
+// the BFF passes through but the controller currently ignores.
 type ValidationEntry struct {
-	Code    string `json:"Code"`
-	Message string `json:"Message"`
-	StepID  string `json:"StepID,omitempty"`
-	Edge    string `json:"Edge,omitempty"`
-	Field   string `json:"Field,omitempty"`
+	Type        string `json:"Type"` // "ValidationError" | "ValidationWarning"
+	Code        string `json:"Code"`
+	Name        string `json:"Name"`
+	Description string `json:"Description"`
+	StepID      string `json:"StepID,omitempty"`
+	Edge        string `json:"Edge,omitempty"`
+	Store       string `json:"Store,omitempty"`
+	Field       string `json:"Field,omitempty"`
 }
 
 type ValidationResult struct {
@@ -130,12 +138,12 @@ type ValidationResult struct {
 /* ------------------------------ Run ------------------------------ */
 
 type FlowRun struct {
-	ID          string                 `json:"ID"`
-	StepState   map[string]StepState   `json:"StepState"`
-	Status      string                 `json:"Status"`
-	Artifacts   map[string]Artifact    `json:"Artifacts"`
-	WaitingURLs []WaitingURL           `json:"WaitingURLs"`
-	StartedAt   string                 `json:"StartedAt"`
+	ID          string               `json:"ID"`
+	StepState   map[string]StepState `json:"StepState"`
+	Status      string               `json:"Status"`
+	Artifacts   map[string]Artifact  `json:"Artifacts"`
+	WaitingURLs []WaitingURL         `json:"WaitingURLs"`
+	StartedAt   string               `json:"StartedAt"`
 }
 
 type StepState struct {
@@ -152,16 +160,23 @@ type LogRecord struct {
 	Message   string `json:"Message"`
 }
 
+// Artifact mirrors the controller's artifact descriptor — see
+// `04-controller-api-reference.md` (WaitingURLs / Artifacts sections).
+// MimeType is sent by the worker once data lands; not always populated.
 type Artifact struct {
-	Edge     string `json:"Edge"`
-	Store    string `json:"Store"`
-	Key      string `json:"Key"`
-	MimeType string `json:"MimeType"`
+	StoreName  string `json:"StoreName"`
+	ObjectName string `json:"ObjectName"`
+	EdgeName   string `json:"EdgeName"`
+	MimeType   string `json:"MimeType,omitempty"`
 }
 
+// WaitingURL is the upload-pending shape returned by the controller in
+// `FlowRun.WaitingURLs`. The client must PUT data to `PutURL` before the
+// controller will move the flow forward.
 type WaitingURL struct {
-	Edge string `json:"Edge"`
-	URL  string `json:"URL"`
+	Artifact Artifact `json:"Artifact"`
+	PutURL   string   `json:"PutURL"`
+	TTL      string   `json:"TTL,omitempty"`
 }
 
 /* -------------------------- BFF-only types ----------------------- */
@@ -172,17 +187,17 @@ type XY struct {
 }
 
 type CanvasLayout struct {
-	FlowName          string         `json:"flowName"`
-	NodePositions     map[string]XY  `json:"nodePositions"`
-	DataWellPositions map[string]XY  `json:"datawellPositions"`
-	Zoom              float64        `json:"zoom"`
-	Offset            XY             `json:"offset"`
+	FlowName          string        `json:"flowName"`
+	NodePositions     map[string]XY `json:"nodePositions"`
+	DataWellPositions map[string]XY `json:"datawellPositions"`
+	Zoom              float64       `json:"zoom"`
+	Offset            XY            `json:"offset"`
 }
 
 type EnrichedProject struct {
-	Project       Project                  `json:"project"`
-	Layouts       map[string]CanvasLayout  `json:"layouts"`
-	PublishStatus string                   `json:"publishStatus"`
+	Project       Project                 `json:"project"`
+	Layouts       map[string]CanvasLayout `json:"layouts"`
+	PublishStatus string                  `json:"publishStatus"`
 }
 
 type AIGenerateRequest struct {

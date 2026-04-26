@@ -20,8 +20,11 @@ import (
 //	/bff/*  — Pupload editor BFF (see internal/api/bff)
 //
 // The BFF persists drafts/layouts under `dataDir`. Pass an empty
-// string to use the default `./data`.
-func NewRouter(svc *service.ExampleService, dataDir string) http.Handler {
+// string to use the default `./data`. `controllerURL` points at the
+// Pupload controller engine (see `04-controller-api-reference.md`);
+// pass an empty string to disable controller-backed routes (the
+// editor still works, but Run/Publish will return 502).
+func NewRouter(svc *service.ExampleService, dataDir, controllerURL string) http.Handler {
 	r := chi.NewRouter()
 
 	r.Use(middleware.RequestID)
@@ -48,7 +51,14 @@ func NewRouter(svc *service.ExampleService, dataDir string) http.Handler {
 	if err != nil {
 		log.Printf("bff: file store unavailable, /bff routes disabled: %v", err)
 	} else {
-		bff.NewHandler(store).Mount(r)
+		var ctrl *bff.Controller
+		if controllerURL != "" {
+			ctrl = bff.NewController(controllerURL)
+			log.Printf("bff: controller proxy enabled → %s", controllerURL)
+		} else {
+			log.Printf("bff: controller URL empty, run/publish endpoints will 502")
+		}
+		bff.NewHandler(store, ctrl).Mount(r)
 	}
 
 	return r

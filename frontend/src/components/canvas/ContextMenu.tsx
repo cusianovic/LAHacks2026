@@ -18,6 +18,13 @@ import clsx from 'clsx';
 //   - Click outside, Escape, or selecting an item closes the menu.
 //   - Items receive a callback invoked before close, so they can
 //     dispatch store actions safely.
+//   - Listeners run in the CAPTURE phase and on `pointerdown` (not just
+//     `mousedown`). React Flow's pane / node handlers call
+//     `stopPropagation` on native pointer events for pan/drag handling,
+//     which would otherwise prevent the bubble from ever reaching the
+//     window. Capture-phase listeners fire before any element handler
+//     can stop the event, so the menu reliably closes when the user
+//     clicks anywhere outside it — including on the React Flow canvas.
 // =====================================================================
 
 export interface ContextMenuItem {
@@ -43,20 +50,25 @@ const VERTICAL_PADDING = 8;
 export default function ContextMenu({ x, y, items, onClose }: ContextMenuProps) {
   const ref = useRef<HTMLDivElement>(null);
 
-  // Dismiss on outside click / Escape.
+  // Dismiss on outside click / Escape. See header comment for why this
+  // listens in the capture phase on `pointerdown` (and `mousedown` as a
+  // fallback for non-pointer-event environments).
   useEffect(() => {
-    const onDown = (e: MouseEvent) => {
+    const onDown = (e: Event) => {
       if (!ref.current) return;
-      if (ref.current.contains(e.target as Node)) return;
+      const target = e.target as Node | null;
+      if (target && ref.current.contains(target)) return;
       onClose();
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();
     };
-    window.addEventListener('mousedown', onDown);
+    window.addEventListener('pointerdown', onDown, true);
+    window.addEventListener('mousedown', onDown, true);
     window.addEventListener('keydown', onKey);
     return () => {
-      window.removeEventListener('mousedown', onDown);
+      window.removeEventListener('pointerdown', onDown, true);
+      window.removeEventListener('mousedown', onDown, true);
       window.removeEventListener('keydown', onKey);
     };
   }, [onClose]);

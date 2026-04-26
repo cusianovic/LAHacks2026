@@ -23,6 +23,7 @@ func main() {
 	port := flags.String("port", "", "server port (overrides PORT env var)")
 	dbPath := flags.String("db", "", "database path (overrides DB_PATH env var)")
 	dataDir := flags.String("data", "", "BFF data directory (overrides BFF_DATA_DIR env var, default ./data)")
+	controller := flags.String("controller", "", "Pupload controller URL (overrides PUPLOAD_CONTROLLER_URL, default http://localhost:1234)")
 	version := flags.Bool("version", false, "print version and exit")
 	_ = flags.Parse(os.Args[1:])
 
@@ -38,6 +39,9 @@ func main() {
 	if *dbPath != "" {
 		cfg.DBPath = *dbPath
 	}
+	if *controller != "" {
+		cfg.ControllerURL = *controller
+	}
 
 	bffDataDir := *dataDir
 	if bffDataDir == "" {
@@ -51,7 +55,7 @@ func main() {
 
 	svc := service.NewExampleService(database)
 
-	router := api.NewRouter(svc, bffDataDir)
+	router := api.NewRouter(svc, bffDataDir, cfg.ControllerURL)
 
 	distFS, err := fs.Sub(frontendFS, "frontend/dist")
 	if err != nil {

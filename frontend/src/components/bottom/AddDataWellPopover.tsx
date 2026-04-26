@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, type RefObject } from 'react';
 
 import Popover from '@/components/common/Popover';
 import Field from '@/components/common/Field';
@@ -24,9 +24,12 @@ const SOURCE_OPTIONS: { value: '' | DataWellSource; label: string }[] = [
 interface AddDataWellPopoverProps {
   open: boolean;
   onClose: () => void;
+  /** Trigger element/wrapper — clicks inside it bypass outside-click
+   *  dismissal so the trigger button can act as a true toggle. */
+  anchorRef?: RefObject<HTMLElement | null>;
 }
 
-export default function AddDataWellPopover({ open, onClose }: AddDataWellPopoverProps) {
+export default function AddDataWellPopover({ open, onClose, anchorRef }: AddDataWellPopoverProps) {
   const flow = useActiveFlow();
   const actions = useFlowActions();
   const [edgeName, setEdgeName] = useState('');
@@ -57,7 +60,7 @@ export default function AddDataWellPopover({ open, onClose }: AddDataWellPopover
   };
 
   return (
-    <Popover open={open} onClose={onClose} className="w-80">
+    <Popover open={open} onClose={onClose} anchorRef={anchorRef} className="w-80">
       <h3 className="text-2xs font-semibold uppercase tracking-[0.12em] text-ink-faint">
         Add Data Well
       </h3>

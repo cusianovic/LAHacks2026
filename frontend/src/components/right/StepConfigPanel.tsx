@@ -2,6 +2,8 @@ import { useMemo } from 'react';
 import { Trash2 } from 'lucide-react';
 
 import {
+  bindInput,
+  bindOutput,
   useActiveFlow,
   useFlowActions,
   useTaskByUses,
@@ -15,7 +17,7 @@ import {
   Dropdown,
 } from '@/components/inspector';
 import { expandCommand } from '@/lib/yaml';
-import type { Step, StepEdge } from '@/types/pupload';
+import type { Step, StepEdge, TaskEdgeDef } from '@/types/pupload';
 
 // =====================================================================
 // StepConfigPanel — edits a Step. Inputs/Outputs/Flags are rendered
@@ -48,10 +50,15 @@ export default function StepConfigPanel({ stepID }: { stepID: string }) {
 
   const updateStepField = (patch: Partial<Step>) => actions.updateStep(step.ID, patch);
 
-  const updatePort = (kind: 'Inputs' | 'Outputs', name: string, edge: string) => {
-    const ports = step[kind].map((p) => (p.Name === name ? { ...p, Edge: edge } : p));
-    if (!ports.some((p) => p.Name === name)) ports.push({ Name: name, Edge: edge });
-    updateStepField({ [kind]: ports } as Partial<Step>);
+  // Both Inputs and Outputs are 1:1 with their port `Name`: wiring
+  // the same port again overwrites its `Edge`. Fan-out is achieved
+  // by multiple consumers referencing the same edge name, not by
+  // duplicating the producer entry. See the helpers in `flowStore`.
+  const setInputEdge = (name: string, edge: string) => {
+    updateStepField({ Inputs: bindInput(step.Inputs, name, edge) });
+  };
+  const setOutputEdge = (name: string, edge: string) => {
+    updateStepField({ Outputs: bindOutput(step.Outputs, name, edge) });
   };
 
   const updateFlag = (name: string, value: string) => {
@@ -91,7 +98,7 @@ export default function StepConfigPanel({ stepID }: { stepID: string }) {
       </InspectorSection>
 
       <InspectorSection title="Inputs">
-        {(task?.Inputs ?? step.Inputs.map((p) => ({ Name: p.Name, Description: '', Required: false, Type: [] }))).map((def) => {
+        {portDefs(task?.Inputs, step.Inputs).map((def) => {
           const bound = step.Inputs.find((p) => p.Name === def.Name);
           return (
             <PortRow
@@ -99,14 +106,14 @@ export default function StepConfigPanel({ stepID }: { stepID: string }) {
               name={def.Name}
               edge={bound?.Edge ?? ''}
               edges={allEdges}
-              onChange={(edge) => updatePort('Inputs', def.Name, edge)}
+              onChange={(edge) => setInputEdge(def.Name, edge)}
             />
           );
         })}
       </InspectorSection>
 
       <InspectorSection title="Outputs">
-        {(task?.Outputs ?? step.Outputs.map((p) => ({ Name: p.Name, Description: '', Required: false, Type: [] }))).map((def) => {
+        {portDefs(task?.Outputs, step.Outputs).map((def) => {
           const bound = step.Outputs.find((p) => p.Name === def.Name);
           return (
             <PortRow
@@ -114,7 +121,7 @@ export default function StepConfigPanel({ stepID }: { stepID: string }) {
               name={def.Name}
               edge={bound?.Edge ?? ''}
               edges={allEdges}
-              onChange={(edge) => updatePort('Outputs', def.Name, edge)}
+              onChange={(edge) => setOutputEdge(def.Name, edge)}
             />
           );
         })}
@@ -228,6 +235,23 @@ function PortRow({
       />
     </InspectorRow>
   );
+}
+
+// portDefs returns the list of port definitions to render — falling
+// back to a deduped projection of `step.Inputs` / `step.Outputs` when
+// the task is unknown (orphan step). Both sides are 1:1 by
+// construction (see flowStore::bindInput/bindOutput), so the dedupe
+// here is defensive against legacy YAML carrying duplicate entries.
+function portDefs(taskDefs: TaskEdgeDef[] | undefined, stepPorts: StepEdge[]): TaskEdgeDef[] {
+  if (taskDefs) return taskDefs;
+  const seen = new Set<string>();
+  const out: TaskEdgeDef[] = [];
+  for (const p of stepPorts) {
+    if (seen.has(p.Name)) continue;
+    seen.add(p.Name);
+    out.push({ Name: p.Name, Description: '', Required: false, Type: [] });
+  }
+  return out;
 }
 
 // keep tsc happy if this type is referenced elsewhere

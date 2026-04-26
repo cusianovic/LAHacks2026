@@ -53,6 +53,7 @@
   --color-status-saving: #fbbf24;
   --color-status-dirty: #94a3b8;
   --color-status-error: #ef4444;
+  --color-status-warn: #fbbf24;
   --color-status-idle: #6b7280;
   --color-status-ready: #22d3ee;
   --color-status-running: #4ade80;

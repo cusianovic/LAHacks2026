@@ -1,9 +1,20 @@
-import { useEffect, useRef, type ReactNode } from 'react';
+import { useEffect, useRef, type ReactNode, type RefObject } from 'react';
 import clsx from 'clsx';
 
 // =====================================================================
 // Popover — dismissable floating panel used by Add Step / Add DataWell.
 // Click outside, Escape, or call `onClose` to dismiss.
+//
+// Anchor handling:
+//   When a Popover is paired with a toggle button, clicks on that button
+//   should NOT trigger the outside-click dismissal — otherwise re-clicking
+//   the trigger would cause a state race:
+//     1. mousedown → window listener fires → onClose() → state false
+//     2. click → button onClick → toggle → state true (popover re-opens)
+//   Pass the trigger element (or its wrapper) via `anchorRef` and clicks
+//   inside it are treated as "inside" the popover, so only the button's
+//   own onClick controls open/close — making the toggle behave like a
+//   real toggle.
 // =====================================================================
 
 interface PopoverProps {
@@ -11,10 +22,13 @@ interface PopoverProps {
   onClose: () => void;
   anchor?: 'top' | 'bottom';
   className?: string;
+  /** Optional element treated as "inside" the popover for outside-click
+   *  dismissal — typically the trigger button or its wrapper. */
+  anchorRef?: RefObject<HTMLElement | null>;
   children: ReactNode;
 }
 
-export default function Popover({ open, onClose, anchor = 'top', className, children }: PopoverProps) {
+export default function Popover({ open, onClose, anchor = 'top', className, anchorRef, children }: PopoverProps) {
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -24,7 +38,10 @@ export default function Popover({ open, onClose, anchor = 'top', className, chil
     };
     const onClick = (e: MouseEvent) => {
       if (!ref.current) return;
-      if (ref.current.contains(e.target as Node)) return;
+      const target = e.target as Node | null;
+      if (!target) return;
+      if (ref.current.contains(target)) return;
+      if (anchorRef?.current?.contains(target)) return;
       onClose();
     };
     window.addEventListener('keydown', onKey);
@@ -33,7 +50,7 @@ export default function Popover({ open, onClose, anchor = 'top', className, chil
       window.removeEventListener('keydown', onKey);
       window.removeEventListener('mousedown', onClick);
     };
-  }, [open, onClose]);
+  }, [open, onClose, anchorRef]);
 
   if (!open) return null;
 

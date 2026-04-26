@@ -162,15 +162,23 @@ class PuploadBFF {
   /* ── Validation ──────────────────────────────────────────────── */
 
   /**
-   * Structural validation of a flow against its tasks.
-   * The BFF stub currently returns a placeholder result.
-   * TODO(wire): plug in `internal/validation.Validate(flow, tasks)`.
+   * Structural validation of a flow against its tasks. The BFF
+   * proxies to the controller's `/api/v1/flow/validate` (see
+   * `internal/api/bff/handler.go::validateFlow`); the controller is
+   * the only validator the editor uses. If no controller is
+   * configured the BFF returns an empty `{Errors:[],Warnings:[]}`.
    */
   async validate(flow: Flow, tasks: Task[]): Promise<ValidationResult> {
-    return request<ValidationResult>(`/flow/validate`, {
+    const result = await request<Partial<ValidationResult>>(`/flow/validate`, {
       method: 'POST',
       body: JSON.stringify({ Flow: flow, Tasks: tasks }),
     });
+    // The controller marshals empty Go slices as JSON `null`, which
+    // would crash callers doing `.length`. Normalise at the boundary.
+    return {
+      Errors: result.Errors ?? [],
+      Warnings: result.Warnings ?? [],
+    };
   }
 
   /* ── Flow Execution ──────────────────────────────────────────── */
@@ -193,6 +201,49 @@ class PuploadBFF {
    */
   async getRunStatus(runID: string): Promise<FlowRun> {
     return request<FlowRun>(`/flow/status/${runID}`);
+  }
+
+  /**
+   * Upload a Blob/File directly to a presigned PUT URL returned in
+   * `FlowRun.WaitingURLs[i].PutURL`. The URL is signed by the controller
+   * for the underlying object store (S3/MinIO), so this request bypasses
+   * the BFF entirely — that's by design (see `04-controller-api-reference.md`,
+   * "Upload Flow (Presigned URLs)").
+   */
+  async uploadToPresignedURL(putURL: string, data: Blob): Promise<void> {
+    const res = await fetch(putURL, {
+      method: 'PUT',
+      body: data,
+      // Don't set Content-Type unless the signature was generated for a
+      // specific one. MinIO/S3 will reject the upload if the header
+      // disagrees with the signature.
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      throw new BFFError(res.status, `upload PUT → ${res.status}: ${body || res.statusText}`);
+    }
+  }
+
+  /**
+   * Drive a run to completion: poll `getRunStatus` every `intervalMs`,
+   * invoking `onTick` with each FlowRun. Resolves when the run reaches
+   * `COMPLETE` or `ERROR`, or rejects if the polled call fails.
+   *
+   * The caller can abort via the `signal` option (e.g. on unmount).
+   */
+  async pollRun(
+    runID: string,
+    onTick: (run: FlowRun) => void,
+    opts: { intervalMs?: number; signal?: AbortSignal } = {},
+  ): Promise<FlowRun> {
+    const intervalMs = opts.intervalMs ?? 1500;
+    while (true) {
+      if (opts.signal?.aborted) throw new DOMException('aborted', 'AbortError');
+      const run = await this.getRunStatus(runID);
+      onTick(run);
+      if (run.Status === 'COMPLETE' || run.Status === 'ERROR') return run;
+      await sleep(intervalMs, opts.signal);
+    }
   }
 
   /* ── AI Generation ───────────────────────────────────────────── */
@@ -228,6 +279,29 @@ function writeLS(key: string, value: unknown): void {
   } catch {
     /* ignore quota errors */
   }
+}
+
+/**
+ * setTimeout-based sleep that also resolves early when an AbortSignal
+ * fires. Used by `pollRun` so callers can cancel polling cleanly (e.g.
+ * on component unmount).
+ */
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new DOMException('aborted', 'AbortError'));
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      window.clearTimeout(timer);
+      reject(new DOMException('aborted', 'AbortError'));
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
 }
 
 /* ----------------------------- Export ------------------------------ */

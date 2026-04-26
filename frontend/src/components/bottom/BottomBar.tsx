@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react';
+import { useRef, useState, type ReactNode } from 'react';
 import clsx from 'clsx';
 import {
   Plus,
@@ -10,8 +10,16 @@ import {
   Send,
 } from 'lucide-react';
 
-import { bff, DEFAULT_PROJECT_ID } from '@/lib/bff';
-import { useActiveFlow, useFlowActions, useFlowState, useTasks } from '@/state/flowStore';
+import { bff } from '@/lib/bff';
+import {
+  useActiveFlow,
+  useFlowActions,
+  useFlowState,
+  useFlowValidation,
+  useRunState,
+  useTasks,
+} from '@/state/flowStore';
+import type { RunPhase } from '@/state/flowStore';
 
 import AddStepPopover from './AddStepPopover';
 import AddDataWellPopover from './AddDataWellPopover';
@@ -39,61 +47,114 @@ import AiGenerateModal from './AiGenerateModal';
 //   - Variants live in `PillButton` below; add new ones for new states
 //     (e.g. "danger", "warning").
 //
-// TODO(wire) hooks (action behavior, not visuals):
-//   - handleValidate → decorate canvas with errors/warnings.
-//   - handleRun      → poll `bff.getRunStatus` and drive node status.
-//   - handlePublish  → refresh publishStatus on success.
+// Run UX:
+//   1. Click Run → dispatch RUN_START + call `bff.testFlow`.
+//   2. The initial `FlowRun` is dispatched as a snapshot; the store's
+//      `useRunPoller` then takes over and drives further snapshots.
+//   3. Datawells with `Source="upload"` paint themselves as clickable
+//      — the per-edge file picker lives in `DataWellNode`, not here.
+//   4. The button label below mirrors `runState.phase` so the operator
+//      can tell the run is alive without watching the canvas.
 // =====================================================================
 
 export default function BottomBar() {
-  const { yamlPanel } = useFlowState();
+  const { yamlPanel, projectID, project, layouts, publishStatus } = useFlowState();
   const flow = useActiveFlow();
   const tasks = useTasks();
   const actions = useFlowActions();
+  const validation = useFlowValidation();
+  const runState = useRunState();
 
   const [stepOpen, setStepOpen] = useState(false);
   const [wellOpen, setWellOpen] = useState(false);
   const [aiOpen, setAiOpen] = useState(false);
 
-  const [busy, setBusy] = useState<string | null>(null);
+  // Wrapper refs are passed to each popover as `anchorRef` so clicks on
+  // the trigger button bypass the popover's outside-click dismissal.
+  // Without this, re-clicking a trigger would race the dismissal vs the
+  // toggle and leave the popover stuck open. See `Popover.tsx` header.
+  const stepWrapRef = useRef<HTMLDivElement>(null);
+  const wellWrapRef = useRef<HTMLDivElement>(null);
 
-  const handleValidate = async () => {
-    if (!flow) return;
-    setBusy('validate');
-    try {
-      const result = await bff.validate(flow, tasks);
-      console.log('[validate] result', result);
-    } catch (err) {
-      console.warn('[validate] failed', err);
-    } finally {
-      setBusy(null);
-    }
+  const [publishBusy, setPublishBusy] = useState(false);
+  const [publishError, setPublishError] = useState<string | null>(null);
+
+  // Validation runs continuously via `useFlowValidation()`, so the
+  // button just opens the Issues tab. (Toggling it off if it's already
+  // showing matches the YAML/JSON pill behaviour.)
+  const handleValidate = () => {
+    actions.toggleYaml('issues');
   };
 
+  // Kick off a run. The actual polling loop lives in the store
+  // (`useRunPoller`) — it spins up automatically once `runID` is
+  // committed via the initial snapshot dispatched here. Uploads
+  // happen on demand from `DataWellNode`, not from a popup.
   const handleRun = async () => {
     if (!flow) return;
-    setBusy('run');
+    actions.runStart(flow.Name);
     try {
-      const run = await bff.testFlow(flow, tasks);
-      console.log('[run] flow run', run);
+      const initial = await bff.testFlow(flow, tasks);
+      actions.runSnapshot(initial);
     } catch (err) {
-      console.warn('[run] failed', err);
-    } finally {
-      setBusy(null);
+      const message = err instanceof Error ? err.message : String(err);
+      actions.runFailed(message);
+      console.warn('[run] testFlow failed', err);
     }
   };
 
   const handlePublish = async () => {
-    setBusy('publish');
+    setPublishBusy(true);
+    setPublishError(null);
     try {
-      await bff.publish(DEFAULT_PROJECT_ID);
+      // The autosave is debounced (600ms), so the BFF may still be
+      // holding a stale draft when the user clicks Publish. Flush
+      // synchronously first so the controller gets exactly what is
+      // currently on the canvas.
+      await bff.saveDraft(projectID, project, layouts, publishStatus);
+      await bff.publish(projectID);
+      actions.setPublishStatus('published');
       console.log('[publish] success');
     } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setPublishError(message);
       console.warn('[publish] failed', err);
     } finally {
-      setBusy(null);
+      setPublishBusy(false);
     }
   };
+
+  const runLabel = describeRunPhase(runState.phase, runState.uploads);
+  const runActive = isRunActive(runState.phase);
+  const errorCount = validation.Errors.length;
+  const warnCount = validation.Warnings.length;
+  const hasErrors = errorCount > 0;
+  const validateLabel =
+    errorCount > 0
+      ? `${errorCount} ${errorCount === 1 ? 'issue' : 'issues'}`
+      : warnCount > 0
+        ? `${warnCount} ${warnCount === 1 ? 'warning' : 'warnings'}`
+        : 'Valid';
+  const validateVariant: 'ghost' | 'danger' | 'warn' =
+    errorCount > 0 ? 'danger' : warnCount > 0 ? 'warn' : 'ghost';
+
+  // Run / Publish are gated on a clean validation result. The label
+  // also reflects the current publish status / last error so the user
+  // gets feedback without opening devtools.
+  const publishLabel = publishBusy
+    ? 'Publishing…'
+    : publishError
+      ? 'Publish failed'
+      : publishStatus === 'published'
+        ? 'Published'
+        : 'Publish';
+  const publishVariant: 'ghost' | 'danger' = publishError ? 'danger' : 'ghost';
+  const runVariant: 'primary' | 'danger' | 'warn' =
+    runState.phase === 'error'
+      ? 'danger'
+      : runState.phase === 'awaiting_uploads'
+        ? 'warn'
+        : 'primary';
 
   return (
     <>
@@ -107,7 +168,7 @@ export default function BottomBar() {
         )}
       >
         {/* ── Group A: creation actions ─────────────────────── */}
-        <div className="relative">
+        <div ref={stepWrapRef} className="relative">
           <PillButton
             icon={<Plus size={13} />}
             label="Step"
@@ -117,9 +178,13 @@ export default function BottomBar() {
             }}
             active={stepOpen}
           />
-          <AddStepPopover open={stepOpen} onClose={() => setStepOpen(false)} />
+          <AddStepPopover
+            open={stepOpen}
+            onClose={() => setStepOpen(false)}
+            anchorRef={stepWrapRef}
+          />
         </div>
-        <div className="relative">
+        <div ref={wellWrapRef} className="relative">
           <PillButton
             icon={<Database size={13} />}
             label="Data Well"
@@ -129,7 +194,11 @@ export default function BottomBar() {
             }}
             active={wellOpen}
           />
-          <AddDataWellPopover open={wellOpen} onClose={() => setWellOpen(false)} />
+          <AddDataWellPopover
+            open={wellOpen}
+            onClose={() => setWellOpen(false)}
+            anchorRef={wellWrapRef}
+          />
         </div>
         <PillButton
           icon={<Sparkles size={13} />}
@@ -153,22 +222,33 @@ export default function BottomBar() {
         {/* ── Group C: lifecycle ────────────────────────────── */}
         <PillButton
           icon={<CheckCircle2 size={13} />}
-          label={busy === 'validate' ? 'Validating…' : 'Validate'}
+          label={validateLabel}
           onClick={handleValidate}
-          disabled={busy === 'validate' || !flow}
+          disabled={!flow}
+          variant={validateVariant}
+          active={yamlPanel.open && yamlPanel.format === 'issues'}
         />
         <PillButton
           icon={<Play size={13} />}
-          label={busy === 'run' ? 'Running…' : 'Run'}
+          label={runLabel}
           onClick={handleRun}
-          disabled={busy === 'run' || !flow}
-          variant="primary"
+          disabled={runActive || !flow || hasErrors}
+          title={
+            hasErrors
+              ? 'Resolve validation errors before running'
+              : runState.phase === 'awaiting_uploads'
+                ? 'Click an upload datawell on the canvas to provide its file'
+                : runState.errorMessage ?? undefined
+          }
+          variant={runVariant}
         />
         <PillButton
           icon={<Send size={13} />}
-          label={busy === 'publish' ? 'Publishing…' : 'Publish'}
+          label={publishLabel}
           onClick={handlePublish}
-          disabled={busy === 'publish'}
+          disabled={publishBusy || !flow || hasErrors}
+          title={hasErrors ? 'Resolve validation errors before publishing' : publishError ?? undefined}
+          variant={publishVariant}
         />
       </div>
 
@@ -185,7 +265,9 @@ interface PillButtonProps {
   onClick?: () => void;
   disabled?: boolean;
   active?: boolean;
-  variant?: 'ghost' | 'brand' | 'primary';
+  /** Native `title` attribute — shown as a tooltip on hover. */
+  title?: string;
+  variant?: 'ghost' | 'brand' | 'primary' | 'danger' | 'warn';
 }
 
 /**
@@ -193,8 +275,10 @@ interface PillButtonProps {
  *
  * Variants:
  *   - `ghost`   (default): low-emphasis transparent, white-on-hover.
- *   - `brand`           : Pupload accent — used for AI / Run.
- *   - `primary`         : solid brand fill — the strongest CTA.
+ *   - `brand`           : Pupload accent — used for AI.
+ *   - `primary`         : solid brand fill — the strongest CTA (Run).
+ *   - `danger`          : red tint — used by Validate when errors exist.
+ *   - `warn`            : amber tint — used by Validate for warning-only state.
  */
 function PillButton({
   icon,
@@ -202,6 +286,7 @@ function PillButton({
   onClick,
   disabled,
   active,
+  title,
   variant = 'ghost',
 }: PillButtonProps) {
   const base = 'inline-flex h-7 items-center gap-1.5 rounded-full px-2.5 text-[12px] font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed';
@@ -218,12 +303,21 @@ function PillButton({
       'bg-accent text-ink hover:bg-accent-dim',
       active && 'bg-accent-dim',
     ),
+    danger: clsx(
+      'text-status-error hover:bg-raised',
+      active && 'bg-raised',
+    ),
+    warn: clsx(
+      'text-status-warn hover:bg-raised',
+      active && 'bg-raised',
+    ),
   };
   return (
     <button
       type="button"
       onClick={onClick}
       disabled={disabled}
+      title={title}
       className={clsx(base, variants[variant])}
     >
       <span className="shrink-0">{icon}</span>
@@ -234,4 +328,36 @@ function PillButton({
 
 function Divider() {
   return <span className="mx-1 h-4 w-px bg-edge" aria-hidden />;
+}
+
+// describeRunPhase produces the Run-button label from the store's
+// runState. The `awaiting_uploads` label includes a quick count so the
+// operator knows how many files are still needed.
+function describeRunPhase(
+  phase: RunPhase,
+  uploads: Record<string, { state: string }>,
+): string {
+  switch (phase) {
+    case 'idle':
+      return 'Run';
+    case 'starting':
+      return 'Starting…';
+    case 'awaiting_uploads': {
+      const remaining = Object.values(uploads).filter(
+        (u) => u.state !== 'uploaded',
+      ).length;
+      if (remaining === 0) return 'Waiting…';
+      return `Awaiting ${remaining} upload${remaining === 1 ? '' : 's'}…`;
+    }
+    case 'running':
+      return 'Running…';
+    case 'complete':
+      return 'Complete';
+    case 'error':
+      return 'Error';
+  }
+}
+
+function isRunActive(phase: RunPhase): boolean {
+  return phase === 'starting' || phase === 'awaiting_uploads' || phase === 'running';
 }

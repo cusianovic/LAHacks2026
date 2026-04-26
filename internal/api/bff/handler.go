@@ -1,26 +1,28 @@
 package bff
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
-	"time"
 
 	"github.com/go-chi/chi/v5"
 )
 
 // Handler hosts the /bff/* routes used by the React editor.
 //
-// Each handler is intentionally short — most of them simply read or
-// write through the FileStore, or return a hardcoded fixture marked
-// with `TODO(wire)`. Replace those swap points individually as the
-// Pupload engine packages come online.
+// The handler keeps frontend-only concerns (drafts, layouts, publish
+// status) in `Store` and proxies execution + persistence concerns to
+// the controller via `Ctrl`. When `Ctrl` is nil the handler degrades
+// gracefully — drafts still save locally, but Run/Publish return 502.
 type Handler struct {
 	Store *FileStore
+	Ctrl  *Controller // optional; nil disables controller-backed routes
 }
 
-func NewHandler(store *FileStore) *Handler {
-	return &Handler{Store: store}
+func NewHandler(store *FileStore, ctrl *Controller) *Handler {
+	return &Handler{Store: store, Ctrl: ctrl}
 }
 
 // Mount adds /bff/* routes to the given chi router.
@@ -51,16 +53,46 @@ func (h *Handler) Mount(r chi.Router) {
 
 /* --------------------------- project ----------------------------- */
 
-func (h *Handler) loadOrSeed(projectID string) (*EnrichedProject, error) {
+func (h *Handler) loadOrSeed(ctx context.Context, projectID string) (*EnrichedProject, error) {
+	// 1. Local draft wins — preserves in-progress edits across reloads.
+	//    Tasks are merged with the current fixture list (`MergeSeedTasks`)
+	//    so that adding/fixing a seed task in `fixtures.go` always
+	//    reaches the editor on the next load, even though the draft
+	//    autosave keeps writing the frontend's in-memory task list back
+	//    to disk on every edit.
 	ep, ok, err := h.Store.LoadProject(projectID)
 	if err != nil {
 		return nil, err
 	}
 	if ok {
+		ep.Project.Tasks = MergeSeedTasks(ep.Project.Tasks)
 		return ep, nil
 	}
-	// First request for this project — seed and persist so subsequent
-	// PUTs build off a stable baseline.
+
+	// 2. No draft — try the controller for an already-published project.
+	//    Same merge applies: seed tasks always available even if the
+	//    controller's stored project predates a fixture update.
+	if h.Ctrl != nil {
+		p, err := h.Ctrl.GetProject(ctx, projectID)
+		if err == nil && p != nil {
+			p.Tasks = MergeSeedTasks(p.Tasks)
+			seeded := &EnrichedProject{
+				Project:       *p,
+				Layouts:       map[string]CanvasLayout{},
+				PublishStatus: "published",
+			}
+			if err := h.Store.SaveProject(projectID, seeded); err != nil {
+				return nil, err
+			}
+			return seeded, nil
+		}
+		if err != nil && !IsNotFound(err) {
+			log.Printf("bff: controller GetProject(%s) failed, falling back to seed: %v", projectID, err)
+		}
+	}
+
+	// 3. Brand new project — seed with the demo fixture so the editor
+	//    has something to render.
 	seeded := &EnrichedProject{
 		Project:       SeedProject(projectID),
 		Layouts:       map[string]CanvasLayout{},
@@ -74,7 +106,7 @@ func (h *Handler) loadOrSeed(projectID string) (*EnrichedProject, error) {
 
 func (h *Handler) getProject(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	ep, err := h.loadOrSeed(id)
+	ep, err := h.loadOrSeed(r.Context(), id)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -107,12 +139,22 @@ func (h *Handler) putProject(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) publishProject(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	ep, err := h.loadOrSeed(id)
+	ep, err := h.loadOrSeed(r.Context(), id)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	// TODO(wire): forward POST /api/v1/project/:id to the controller here.
+	if h.Ctrl == nil {
+		writeError(w, http.StatusBadGateway, "controller not configured")
+		return
+	}
+	// Make sure the project ID in the body matches the URL — the
+	// controller enforces this and will 400 otherwise.
+	ep.Project.ID = id
+	if err := h.Ctrl.SaveProject(r.Context(), id, &ep.Project); err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
 	ep.PublishStatus = "published"
 	if err := h.Store.SaveProject(id, ep); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -125,7 +167,7 @@ func (h *Handler) publishProject(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) getTasks(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	ep, err := h.loadOrSeed(id)
+	ep, err := h.loadOrSeed(r.Context(), id)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -140,7 +182,7 @@ func (h *Handler) addTask(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid body: %v", err))
 		return
 	}
-	ep, err := h.loadOrSeed(id)
+	ep, err := h.loadOrSeed(r.Context(), id)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -174,7 +216,7 @@ func (h *Handler) saveLayout(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid body: %v", err))
 		return
 	}
-	ep, err := h.loadOrSeed(id)
+	ep, err := h.loadOrSeed(r.Context(), id)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -192,7 +234,7 @@ func (h *Handler) saveLayout(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) getLayouts(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	ep, err := h.loadOrSeed(id)
+	ep, err := h.loadOrSeed(r.Context(), id)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -212,11 +254,31 @@ func (h *Handler) validateFlow(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid body: %v", err))
 		return
 	}
-	// TODO(wire): replace this with a call to internal/validation.Validate(flow, tasks).
-	writeJSON(w, http.StatusOK, ValidationResult{
-		Errors:   []ValidationEntry{},
-		Warnings: []ValidationEntry{},
-	})
+	if h.Ctrl == nil {
+		// No controller wired — surface a clean empty result. The
+		// frontend treats this as "nothing to show" and the editor
+		// keeps working with no validation feedback.
+		writeJSON(w, http.StatusOK, ValidationResult{
+			Errors:   []ValidationEntry{},
+			Warnings: []ValidationEntry{},
+		})
+		return
+	}
+	result, err := h.Ctrl.ValidateFlow(r.Context(), req.Flow, req.Tasks)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	// The controller emits nil slices as JSON `null` when there are
+	// no entries. Coerce to empty slices so the wire shape always
+	// matches the documented `{"Errors":[],"Warnings":[]}` contract.
+	if result.Errors == nil {
+		result.Errors = []ValidationEntry{}
+	}
+	if result.Warnings == nil {
+		result.Warnings = []ValidationEntry{}
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (h *Handler) testFlow(w http.ResponseWriter, r *http.Request) {
@@ -225,29 +287,30 @@ func (h *Handler) testFlow(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid body: %v", err))
 		return
 	}
-	// TODO(wire): proxy to controller POST /api/v1/flow/test.
-	stub := FlowRun{
-		ID:          fmt.Sprintf("run-stub-%d", time.Now().UnixMilli()),
-		Status:      "STOPPED",
-		StepState:   map[string]StepState{},
-		Artifacts:   map[string]Artifact{},
-		WaitingURLs: []WaitingURL{},
-		StartedAt:   time.Now().UTC().Format(time.RFC3339),
+	if h.Ctrl == nil {
+		writeError(w, http.StatusBadGateway, "controller not configured")
+		return
 	}
-	writeJSON(w, http.StatusOK, stub)
+	run, err := h.Ctrl.TestFlow(r.Context(), req.Flow, req.Tasks)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, run)
 }
 
 func (h *Handler) runStatus(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	// TODO(wire): proxy to controller GET /api/v1/flow/status/:id.
-	writeJSON(w, http.StatusOK, FlowRun{
-		ID:          id,
-		Status:      "STOPPED",
-		StepState:   map[string]StepState{},
-		Artifacts:   map[string]Artifact{},
-		WaitingURLs: []WaitingURL{},
-		StartedAt:   time.Now().UTC().Format(time.RFC3339),
-	})
+	if h.Ctrl == nil {
+		writeError(w, http.StatusBadGateway, "controller not configured")
+		return
+	}
+	run, err := h.Ctrl.GetFlowStatus(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, run)
 }
 
 /* ------------------------------ ai ------------------------------- */
