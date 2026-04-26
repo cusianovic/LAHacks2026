@@ -20,10 +20,12 @@ import {
   useTasks,
 } from '@/state/flowStore';
 import type { RunPhase } from '@/state/flowStore';
+import type { PublishResult } from '@/types/pupload';
 
 import AddStepPopover from './AddStepPopover';
 import AddDataWellPopover from './AddDataWellPopover';
 import AiGenerateModal from './AiGenerateModal';
+import PublishResultPopover from './PublishResultPopover';
 
 // =====================================================================
 // BottomBar — Figma-style floating pill toolbar.
@@ -75,9 +77,17 @@ export default function BottomBar() {
   // toggle and leave the popover stuck open. See `Popover.tsx` header.
   const stepWrapRef = useRef<HTMLDivElement>(null);
   const wellWrapRef = useRef<HTMLDivElement>(null);
+  const publishWrapRef = useRef<HTMLDivElement>(null);
 
   const [publishBusy, setPublishBusy] = useState(false);
   const [publishError, setPublishError] = useState<string | null>(null);
+  // Last successful publish response — drives the trigger-URL popover.
+  // Kept across edits because the URLs themselves don't change (they
+  // identify the project + flow names). The popover is just a
+  // recipe of what the controller is currently running; re-publishing
+  // refreshes it.
+  const [publishResult, setPublishResult] = useState<PublishResult | null>(null);
+  const [publishOpen, setPublishOpen] = useState(false);
 
   // Validation runs continuously via `useFlowValidation()`, so the
   // button just opens the Issues tab. (Toggling it off if it's already
@@ -104,6 +114,14 @@ export default function BottomBar() {
   };
 
   const handlePublish = async () => {
+    // If we already have a fresh result and the user clicks the
+    // Published button again, treat it as "show me the URLs" rather
+    // than re-running publish. Cuts a noisy round-trip when all the
+    // user wants is to copy the URL again.
+    if (publishStatus === 'published' && publishResult && !publishBusy) {
+      setPublishOpen((v) => !v);
+      return;
+    }
     setPublishBusy(true);
     setPublishError(null);
     try {
@@ -114,12 +132,15 @@ export default function BottomBar() {
       // of the localStorage fallback — if the BFF can't be reached
       // we'd rather fail loudly than push a stale on-disk draft.
       await bff.saveDraft(projectID, project, layouts, publishStatus, { strict: true });
-      await bff.publish(projectID);
+      const result = await bff.publish(projectID);
       actions.setPublishStatus('published');
-      console.log('[publish] success');
+      setPublishResult(result);
+      setPublishOpen(true);
+      console.log('[publish] success', result);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       setPublishError(message);
+      setPublishOpen(false);
       console.warn('[publish] failed', err);
     } finally {
       setPublishBusy(false);
@@ -244,14 +265,29 @@ export default function BottomBar() {
           }
           variant={runVariant}
         />
-        <PillButton
-          icon={<Send size={13} />}
-          label={publishLabel}
-          onClick={handlePublish}
-          disabled={publishBusy || !flow || hasErrors}
-          title={hasErrors ? 'Resolve validation errors before publishing' : publishError ?? undefined}
-          variant={publishVariant}
-        />
+        <div ref={publishWrapRef} className="relative">
+          <PillButton
+            icon={<Send size={13} />}
+            label={publishLabel}
+            onClick={handlePublish}
+            disabled={publishBusy || !flow || hasErrors}
+            title={
+              hasErrors
+                ? 'Resolve validation errors before publishing'
+                : publishStatus === 'published' && publishResult
+                  ? 'Click to copy trigger URLs'
+                  : publishError ?? undefined
+            }
+            variant={publishVariant}
+            active={publishOpen}
+          />
+          <PublishResultPopover
+            open={publishOpen}
+            onClose={() => setPublishOpen(false)}
+            anchorRef={publishWrapRef}
+            result={publishResult}
+          />
+        </div>
       </div>
 
       <AiGenerateModal open={aiOpen} onClose={() => setAiOpen(false)} />

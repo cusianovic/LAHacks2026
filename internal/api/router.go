@@ -12,6 +12,16 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 )
 
+// AIConfig bundles the Anthropic-related env so the wiring layer
+// doesn't have to spread three loose strings through every constructor.
+// Empty `APIKey` disables AI generation; the BFF then falls back to a
+// sample flow so the editor still demos.
+type AIConfig struct {
+	APIKey  string
+	Model   string
+	BaseURL string
+}
+
 // NewRouter builds and returns the application router.
 //
 // Layout:
@@ -23,8 +33,9 @@ import (
 // string to use the default `./data`. `controllerURL` points at the
 // Pupload controller engine (see `04-controller-api-reference.md`);
 // pass an empty string to disable controller-backed routes (the
-// editor still works, but Run/Publish will return 502).
-func NewRouter(svc *service.ExampleService, dataDir, controllerURL string) http.Handler {
+// editor still works, but Run/Publish will return 502). `ai` carries
+// the Anthropic credentials; an empty `APIKey` means "no real AI".
+func NewRouter(svc *service.ExampleService, dataDir, controllerURL string, ai AIConfig) http.Handler {
 	r := chi.NewRouter()
 
 	r.Use(middleware.RequestID)
@@ -58,7 +69,13 @@ func NewRouter(svc *service.ExampleService, dataDir, controllerURL string) http.
 		} else {
 			log.Printf("bff: controller URL empty, run/publish endpoints will 502")
 		}
-		bff.NewHandler(store, ctrl).Mount(r)
+		anthropic := bff.NewAnthropicClient(ai.APIKey, ai.Model, ai.BaseURL)
+		if anthropic != nil {
+			log.Printf("bff: AI generation enabled (model=%s)", anthropic.Model())
+		} else {
+			log.Printf("bff: ANTHROPIC_API_KEY not set, AI generation falls back to sample flow")
+		}
+		bff.NewHandler(store, ctrl, anthropic).Mount(r)
 	}
 
 	return r

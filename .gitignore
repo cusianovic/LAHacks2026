@@ -30,6 +30,12 @@ cmd/server/frontend/dist/*.css
 # BFF draft persistence (project drafts + canvas layouts written by /bff/*)
 data/
 
+# Local secrets — loaded by cmd/server/main.go via godotenv on boot.
+# Keep `.env.example` checked in as the template; never commit `.env`.
+.env
+.env.local
+.env.*.local
+
 # IDE
 .idea/
 .vscode/

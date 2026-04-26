@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -18,13 +19,18 @@ import (
 // status) in `Store` and proxies execution + persistence concerns to
 // the controller via `Ctrl`. When `Ctrl` is nil the handler degrades
 // gracefully — drafts still save locally, but Run/Publish return 502.
+//
+// `AI` is the optional Anthropic client used by the AI generation
+// endpoint. Nil means "no API key configured"; the handler falls
+// back to a hardcoded sample flow so the editor still demos.
 type Handler struct {
 	Store *FileStore
-	Ctrl  *Controller // optional; nil disables controller-backed routes
+	Ctrl  *Controller      // optional; nil disables controller-backed routes
+	AI    *AnthropicClient // optional; nil falls back to SampleAIFlow
 }
 
-func NewHandler(store *FileStore, ctrl *Controller) *Handler {
-	return &Handler{Store: store, Ctrl: ctrl}
+func NewHandler(store *FileStore, ctrl *Controller, ai *AnthropicClient) *Handler {
+	return &Handler{Store: store, Ctrl: ctrl, AI: ai}
 }
 
 // Mount adds /bff/* routes to the given chi router.
@@ -195,7 +201,33 @@ func (h *Handler) publishProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Printf("bff: published project %s (hash=%s)", id, ep.LastPublishedHash[:8])
-	w.WriteHeader(http.StatusNoContent)
+	writeJSON(w, http.StatusOK, buildPublishResult(h.Ctrl.BaseURL, id, ep.Project))
+}
+
+// buildPublishResult enumerates the flows the user just published and
+// constructs the trigger URL for each (as documented in
+// `04-controller-api-reference.md`: `POST /api/v1/project/:id/flows/:name`).
+// The popover in the editor renders this verbatim — keep the field
+// names in sync with the `PublishResult` TS type.
+func buildPublishResult(controllerURL, projectID string, p Project) PublishResult {
+	flows := make([]PublishedFlowRef, 0, len(p.Flows))
+	for _, f := range p.Flows {
+		steps := make([]PublishedFlowStep, 0, len(f.Steps))
+		for _, s := range f.Steps {
+			steps = append(steps, PublishedFlowStep{ID: s.ID, Uses: s.Uses})
+		}
+		flows = append(flows, PublishedFlowRef{
+			Name:   f.Name,
+			Method: http.MethodPost,
+			URL:    fmt.Sprintf("%s/api/v1/project/%s/flows/%s", controllerURL, projectID, f.Name),
+			Steps:  steps,
+		})
+	}
+	return PublishResult{
+		ControllerURL: controllerURL,
+		ProjectID:     projectID,
+		Flows:         flows,
+	}
 }
 
 // hashProject returns a stable SHA-256 hex digest of the project's
@@ -379,16 +411,85 @@ func (h *Handler) runStatus(w http.ResponseWriter, r *http.Request) {
 
 /* ------------------------------ ai ------------------------------- */
 
+// aiGenerate turns the operator's prompt into a structured Flow.
+//
+// Pipeline (see `ai_generate.go` for the heavy lifting):
+//  1. Decode `AIGenerateRequest` from the body.
+//  2. Load the project so the generator can target real task IDs.
+//  3. Either dispatch to Claude (`generateAIFlow`) or fall back to
+//     `SampleAIFlow` if no API key is configured.
+//  4. Return `AIGenerateResult` JSON. Errors are surfaced as 502s
+//     with a human-readable message the modal renders inline.
+//
+// The handler does NOT mutate the project here — the editor calls
+// `actions.hydrateFromAI` client-side, which then triggers an
+// autosave that round-trips to `PUT /bff/project/:id`. Keeping the
+// AI endpoint pure makes it easy to retry on the frontend without
+// having to roll back partial server state.
 func (h *Handler) aiGenerate(w http.ResponseWriter, r *http.Request) {
 	var req AIGenerateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid body: %v", err))
 		return
 	}
-	// TODO(wire): call Claude with the project's tasks/stores + req.Prompt
-	// and parse the result. For now we return a fixed sample so the
-	// canvas-hydration path is testable end-to-end without an API key.
-	result := SampleAIFlow(req.Prompt)
+	if strings.TrimSpace(req.Prompt) == "" {
+		writeError(w, http.StatusBadRequest, "prompt is required")
+		return
+	}
+
+	// No API key → keep the demo working with a fixed sample. Make the
+	// origin of the response visible to the user via a warning so the
+	// behaviour isn't mysterious if the key wasn't picked up by env.
+	if h.AI == nil {
+		log.Printf("bff: ai_generate: ANTHROPIC_API_KEY not set, returning sample flow")
+		result := SampleAIFlow(req.Prompt)
+		result.Warnings = append([]string{
+			"Sample response \u2014 set ANTHROPIC_API_KEY to enable real generation.",
+		}, result.Warnings...)
+		writeJSON(w, http.StatusOK, result)
+		return
+	}
+
+	// Pull the current project so the generator knows what task palette
+	// the model can target. `loadOrSeed` handles the "first run, no
+	// draft yet" case for us.
+	ep, err := h.loadOrSeed(r.Context(), req.ProjectID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("load project: %v", err))
+		return
+	}
+
+	// Edit-mode context: if the frontend told us which flow is active
+	// AND that flow exists on the project AND it has at least one step,
+	// hand it (and its layout) to the generator so the model edits in
+	// place rather than fabricating a fresh flow. The frontend flushes
+	// its autosave before this call (see AiGenerateModal) so what we
+	// load here matches what's on the canvas.
+	var (
+		currentFlow   *Flow
+		currentLayout *CanvasLayout
+	)
+	if req.ActiveFlowName != "" {
+		for i := range ep.Project.Flows {
+			if ep.Project.Flows[i].Name == req.ActiveFlowName {
+				currentFlow = &ep.Project.Flows[i]
+				break
+			}
+		}
+		if layout, ok := ep.Layouts[req.ActiveFlowName]; ok {
+			// Take a copy so the generator can mutate freely without
+			// stomping on the persisted layout.
+			cloned := layout
+			currentLayout = &cloned
+		}
+	}
+
+	result, err := generateAIFlow(r.Context(), h.AI, &ep.Project, currentFlow, currentLayout, req.Prompt)
+	if err != nil {
+		log.Printf("bff: ai_generate failed for project %s: %v", req.ProjectID, err)
+		writeError(w, http.StatusBadGateway, fmt.Sprintf("ai generation failed: %v", err))
+		return
+	}
 	writeJSON(w, http.StatusOK, result)
 }
 

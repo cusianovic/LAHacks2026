@@ -13,6 +13,8 @@ import (
 	"pupload-lahacks/internal/config"
 	"pupload-lahacks/internal/db"
 	"pupload-lahacks/internal/service"
+
+	"github.com/joho/godotenv"
 )
 
 //go:embed all:frontend/dist
@@ -30,6 +32,16 @@ func main() {
 	if *version {
 		log.Printf("pupload-lahacks %s", build.Version)
 		return
+	}
+
+	// Load .env if present so secrets like ANTHROPIC_API_KEY can live
+	// in a gitignored file at the repo root rather than in the user's
+	// shell rc. `godotenv.Load()` is no-op when the file is missing,
+	// so this stays out of the way in production deploys that set env
+	// vars directly. Existing OS env vars take precedence — we don't
+	// want a stale .env to override a deliberate `export` at the CLI.
+	if err := godotenv.Load(); err != nil && !os.IsNotExist(err) {
+		log.Printf("config: .env load skipped: %v", err)
 	}
 
 	cfg := config.Load()
@@ -55,7 +67,11 @@ func main() {
 
 	svc := service.NewExampleService(database)
 
-	router := api.NewRouter(svc, bffDataDir, cfg.ControllerURL)
+	router := api.NewRouter(svc, bffDataDir, cfg.ControllerURL, api.AIConfig{
+		APIKey:  cfg.AnthropicAPIKey,
+		Model:   cfg.AnthropicModel,
+		BaseURL: cfg.AnthropicBaseURL,
+	})
 
 	distFS, err := fs.Sub(frontendFS, "frontend/dist")
 	if err != nil {

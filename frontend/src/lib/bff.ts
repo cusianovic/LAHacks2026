@@ -22,6 +22,7 @@ import type {
   Flow,
   FlowRun,
   Project,
+  PublishResult,
   PublishStatus,
   Task,
   ValidationResult,
@@ -131,9 +132,13 @@ class PuploadBFF {
     }
   }
 
-  /** Push the current draft to the controller. */
-  async publish(projectID: string): Promise<void> {
-    await request<void>(`/project/${projectID}/publish`, { method: 'POST' });
+  /** Push the current draft to the controller. Returns the trigger
+   *  info the editor surfaces in the post-publish popover (controller
+   *  URL + one runnable URL per flow + step summary). */
+  async publish(projectID: string): Promise<PublishResult> {
+    return await request<PublishResult>(`/project/${projectID}/publish`, {
+      method: 'POST',
+    });
   }
 
   /* ── Tasks ───────────────────────────────────────────────────── */
@@ -263,14 +268,31 @@ class PuploadBFF {
 
   /**
    * Generate a flow from a natural language prompt.
-   * The BFF stub returns a hardcoded sample so the canvas-hydration
-   * path is testable end-to-end without an AI key.
-   * TODO(wire): swap the stub for a Claude call on the Go side.
+   *
+   * If `activeFlowName` is provided, the BFF runs the generator in
+   * edit mode: Claude is given the current flow as context and asked
+   * to modify it in place (preserving Step IDs / Edge names / canvas
+   * positions for the parts that didn't change). Pass `undefined`
+   * (or an empty string) for create-from-scratch behaviour.
+   *
+   * The caller should flush any pending autosave before calling this
+   * — the BFF reads the current flow off the persisted draft, so a
+   * stale on-disk copy will be edited instead of what's on the canvas.
+   * `AiGenerateModal` does this with `bff.saveDraft({ strict: true })`
+   * on every submit.
    */
-  async generateFlow(projectID: string, prompt: string): Promise<AIGenerateResult> {
+  async generateFlow(
+    projectID: string,
+    prompt: string,
+    activeFlowName?: string,
+  ): Promise<AIGenerateResult> {
     return request<AIGenerateResult>(`/ai/generate`, {
       method: 'POST',
-      body: JSON.stringify({ projectID, prompt }),
+      body: JSON.stringify({
+        projectID,
+        prompt,
+        activeFlowName: activeFlowName ?? '',
+      }),
     });
   }
 }

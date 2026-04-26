@@ -208,9 +208,49 @@ type EnrichedProject struct {
 	LastPublishedHash string `json:"lastPublishedHash,omitempty"`
 }
 
+// PublishResult is what the BFF returns from `POST /bff/project/:id/publish`.
+// It carries the public-facing trigger URLs the user needs to actually
+// run a published flow from outside the editor (CI, curl, a webhook,
+// etc.). The Pupload editor surfaces these in a popover anchored to
+// the Publish button so the operator can copy them without having to
+// reconstruct the controller path by hand.
+//
+// `ControllerURL` is the controller's base URL as seen by the BFF.
+// In a typical deploy this is also reachable from the user's machine
+// (the controller is exposed publicly), so we hand it back verbatim.
+// Substitute behind a reverse proxy if you need a different external
+// hostname — the BFF doesn't know the public domain.
+type PublishResult struct {
+	ControllerURL string             `json:"controllerURL"`
+	ProjectID     string             `json:"projectID"`
+	Flows         []PublishedFlowRef `json:"flows"`
+}
+
+// PublishedFlowRef describes one runnable flow on the controller after
+// a successful publish. `URL` is the full POSTable trigger endpoint;
+// `Steps` is a thin summary used by the popover to remind the operator
+// what's actually inside the flow they just pushed.
+type PublishedFlowRef struct {
+	Name   string              `json:"name"`
+	Method string              `json:"method"`
+	URL    string              `json:"url"`
+	Steps  []PublishedFlowStep `json:"steps"`
+}
+
+type PublishedFlowStep struct {
+	ID   string `json:"id"`
+	Uses string `json:"uses"`
+}
+
 type AIGenerateRequest struct {
 	ProjectID string `json:"projectID"`
 	Prompt    string `json:"prompt"`
+	// ActiveFlowName is the flow currently open on the canvas. If set
+	// and that flow exists on the project, the generator runs in
+	// "edit mode" — the model is given the current flow + layout as
+	// context and asked to modify it in place rather than fabricate
+	// from scratch. Empty (or unknown name) falls back to create-mode.
+	ActiveFlowName string `json:"activeFlowName,omitempty"`
 }
 
 type AIGenerateResult struct {

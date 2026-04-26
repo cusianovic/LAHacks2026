@@ -253,6 +253,32 @@ export interface EnrichedProject {
   lastPublishedHash?: string;
 }
 
+/* --------------------- Publish response ---------------------------- */
+
+/** Trigger info returned by `POST /bff/project/:id/publish`. The
+ *  editor renders this in a popover anchored to the Publish button so
+ *  the operator can copy the runnable URLs without having to assemble
+ *  the controller path by hand.
+ *
+ *  Mirrors `bff.PublishResult` in `internal/api/bff/models.go`. */
+export interface PublishResult {
+  controllerURL: string;
+  projectID: string;
+  flows: PublishedFlowRef[];
+}
+
+export interface PublishedFlowRef {
+  name: string;
+  method: string;
+  url: string;
+  steps: PublishedFlowStep[];
+}
+
+export interface PublishedFlowStep {
+  id: string;
+  uses: string;
+}
+
 /* --------------------- AI generation response ---------------------- */
 
 export interface AIGenerateResult {

@@ -5,6 +5,7 @@ go 1.22
 require (
 	github.com/glebarez/sqlite v1.11.0
 	github.com/go-chi/chi/v5 v5.2.5
+	github.com/joho/godotenv v1.5.1
 	golang.org/x/time v0.5.0
 	gorm.io/gorm v1.31.1
 )
