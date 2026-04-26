@@ -1,0 +1,164 @@
+/* Fonts: Geist (sans) and JetBrains Mono (mono). Variable fonts ship via @fontsource-variable. */
+@import '@fontsource-variable/geist/index.css';
+@import '@fontsource-variable/jetbrains-mono/index.css';
+
+/* React Flow base styles — required for nodes/edges/handles to render correctly. */
+@import 'reactflow/dist/style.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ------------------------------------------------------------------ */
+/*  DESIGN TOKENS — single source of truth.                           */
+/*                                                                    */
+/*  Every color the editor uses is declared here as a CSS variable.   */
+/*  `tailwind.config.js` exposes these as utility classes:            */
+/*    bg-canvas, bg-chrome, bg-raised, text-ink, text-ink-dim,        */
+/*    border-border, bg-row-hover, text-status-saved, ...             */
+/*                                                                    */
+/*  To re-skin: edit the values below. To add a token:                */
+/*    1. add a `--color-*` variable here                              */
+/*    2. add a matching key in `tailwind.config.js > colors`          */
+/*                                                                    */
+/*  The two anchor tokens come from the Figma file:                   */
+/*    Primary Color   → #d7d7d7  → canvas (work area)                 */
+/*    Secondary Color → #2c2c2c  → chrome (sidebars + pill)           */
+/*    Border          → #666363  → all hairline seams                 */
+/* ------------------------------------------------------------------ */
+:root {
+  /* core surfaces */
+  --color-canvas: #d7d7d7;
+  --color-chrome: #2c2c2c;
+  --color-raised: #383838;
+  --color-raised-strong: #4a4a4a;
+  --color-raised-hover: #404040;
+
+  /* borders */
+  --color-border: #666363;
+
+  /* text — defaults assume dark chrome (light text). `ink-inverse`
+     is for the rare case where text sits on the light canvas. */
+  --color-ink: #ffffff;
+  --color-ink-dim: #b3b3b3;
+  --color-ink-faint: #888888;
+  --color-ink-inverse: #1a1a1a;
+
+  /* list-row treatments — `rgba` so they tint whatever is underneath */
+  --color-row-hover: rgba(255, 255, 255, 0.06);
+  --color-row-active: rgba(255, 255, 255, 0.10);
+
+  /* status — project header dot + node status strips */
+  --color-status-saved: #4ade80;
+  --color-status-saving: #fbbf24;
+  --color-status-dirty: #94a3b8;
+  --color-status-error: #ef4444;
+  --color-status-idle: #6b7280;
+  --color-status-ready: #22d3ee;
+  --color-status-running: #4ade80;
+  --color-status-complete: #22c55e;
+  --color-status-waiting: #f59e0b;
+
+  /* accent — Pupload green; used only for selection/focus rings */
+  --color-accent: #028657;
+  --color-accent-dim: #1fa86a;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Global base — body bg + scrollbar.                                */
+/* ------------------------------------------------------------------ */
+@layer base {
+  html,
+  body,
+  #root {
+    @apply h-full;
+  }
+  body {
+    background-color: var(--color-chrome);
+    color: var(--color-ink);
+    -webkit-font-smoothing: antialiased;
+    font-feature-settings: 'cv11', 'ss01';
+  }
+  *::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  *::-webkit-scrollbar-thumb {
+    background: var(--color-raised-strong);
+    border-radius: 9999px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+  }
+  *::-webkit-scrollbar-thumb:hover {
+    background: var(--color-border);
+    background-clip: padding-box;
+    border: 2px solid transparent;
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/*  React Flow theming — light canvas, dark widgets.                  */
+/*  Edits here only affect the canvas; chrome is styled via Tailwind. */
+/* ------------------------------------------------------------------ */
+@layer components {
+  .react-flow__background {
+    background-color: var(--color-canvas);
+  }
+  /* Default edge stroke needs to be visible on the LIGHT canvas, so
+     it's a dark grey. Hover bumps to near-black; selection uses the
+     accent color. */
+  .react-flow__edge-path {
+    stroke: var(--color-chrome);
+    stroke-width: 1.5;
+    opacity: 0.55;
+  }
+  .react-flow__edge:hover .react-flow__edge-path {
+    stroke: var(--color-chrome);
+    opacity: 1;
+  }
+  .react-flow__edge.selected .react-flow__edge-path,
+  .react-flow__edge:focus .react-flow__edge-path,
+  .react-flow__edge:focus-visible .react-flow__edge-path {
+    stroke: var(--color-accent);
+    stroke-width: 2;
+    opacity: 1;
+  }
+  .react-flow__connectionline path {
+    stroke: var(--color-accent);
+    stroke-width: 2;
+    stroke-dasharray: 4 4;
+  }
+  .react-flow__handle {
+    width: 10px;
+    height: 10px;
+    background: var(--color-chrome);
+    border: 1.5px solid var(--color-border);
+  }
+  .react-flow__handle:hover {
+    background: var(--color-accent);
+    border-color: var(--color-accent);
+  }
+  .react-flow__controls {
+    background: var(--color-chrome);
+    border: 1px solid var(--color-border);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  .react-flow__controls-button {
+    background: var(--color-chrome);
+    border-bottom: 1px solid var(--color-border);
+    color: var(--color-ink-dim);
+    fill: var(--color-ink-dim);
+  }
+  .react-flow__controls-button:hover {
+    background: var(--color-raised);
+    color: var(--color-ink);
+    fill: var(--color-ink);
+  }
+  .react-flow__attribution {
+    display: none;
+  }
+}
